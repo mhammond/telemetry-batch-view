@@ -1,17 +1,15 @@
 package com.mozilla.telemetry.views
 
+import com.mozilla.telemetry.heka.{Dataset, Message}
+import com.mozilla.telemetry.utils.S3Store
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Row, SQLContext}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.joda.time.{DateTime, Days, format}
-import org.json4s.JsonAST.{JValue, _}
+import org.json4s.{DefaultFormats, JValue}
+import org.json4s.JsonAST._
 import org.json4s.jackson.JsonMethods.parse
-import org.json4s.DefaultFormats
-import org.rogach.scallop._
-import com.mozilla.telemetry.heka.{Dataset, Message}
-import com.mozilla.telemetry.utils.{MainPing, S3Store}
-import com.mozilla.telemetry.heka.HekaFrame
-import org.json4s.JValue // Just for my attempted mocks below.....
+import org.rogach.scallop._ // Just for my attempted mocks below.....
 
 object SyncView {
   def streamVersion: String = "v1"
@@ -21,13 +19,16 @@ object SyncView {
   private class Conf(args: Array[String]) extends ScallopConf(args) {
     val from = opt[String]("from", descr = "From submission date", required = false)
     val to = opt[String]("to", descr = "To submission date", required = false)
-    val outputBucket = opt[String]("bucket", descr = "Destination bucket for parquet data", required = true)
+    val outputBucket = opt[String]("bucket", descr = "Destination bucket for parquet data", required = false)
+    val outputFilename = opt[String]("outputFilename", descr = "Destination local filename for parquet data", required = false)
     val limit = opt[Int]("limit", descr = "Maximum number of files to read from S3", required = false)
     verify()
   }
 
   def main(args: Array[String]) {
     val conf = new Conf(args) // parse command line arguments
+    if (!conf.outputBucket.supplied && !conf.outputFilename.supplied)
+      conf.errorMessageHandler("One of outputBucket or outputFilename must be specified")
     val fmt = format.DateTimeFormat.forPattern("yyyyMMdd")
     val to = conf.to.get match {
       case Some(t) => fmt.parseDateTime(t)
@@ -96,30 +97,37 @@ object SyncView {
 
       val records = sqlContext.createDataFrame(rowRDD, SyncPingConverter.syncType)
 
-      // Note we cannot just use 'partitionBy' below to automatically populate
-      // the submission_date partition, because none of the write modes do
-      // quite what we want:
-      //  - "overwrite" causes the entire vX partition to be deleted and replaced with
-      //    the current day's data, so doesn't work with incremental jobs
-      //  - "append" would allow us to generate duplicate data for the same day, so
-      //    we would need to add some manual checks before running
-      //  - "error" (the default) causes the job to fail after any data is
-      //    loaded, so we can't do single day incremental updates.
-      //  - "ignore" causes new data not to be saved.
-      // So we manually add the "submission_date_s3" parameter to the s3path.
-      val s3prefix = s"$jobName/$streamVersion/submission_date_s3=$currentDateString"
-      val s3path = s"s3://${conf.outputBucket()}/$s3prefix"
+      if (conf.outputBucket.supplied) {
+        // Note we cannot just use 'partitionBy' below to automatically populate
+        // the submission_date partition, because none of the write modes do
+        // quite what we want:
+        //  - "overwrite" causes the entire vX partition to be deleted and replaced with
+        //    the current day's data, so doesn't work with incremental jobs
+        //  - "append" would allow us to generate duplicate data for the same day, so
+        //    we would need to add some manual checks before running
+        //  - "error" (the default) causes the job to fail after any data is
+        //    loaded, so we can't do single day incremental updates.
+        //  - "ignore" causes new data not to be saved.
+        // So we manually add the "submission_date_s3" parameter to the s3path.
+        val s3prefix = s"$jobName/$streamVersion/submission_date_s3=$currentDateString"
+        val s3path = s"s3://${conf.outputBucket()}/$s3prefix"
 
-      // Repartition the dataframe by sample_id before saving.
-      val partitioned = records.repartition(100, records.col("sample_id"))
+        // Repartition the dataframe by sample_id before saving.
+        val partitioned = records.repartition(100, records.col("sample_id"))
 
-      // Then write to S3 using the given fields as path name partitions. If any
-      // data already exists for the target day, cowardly refuse to run. In
-      // that case, go delete the data from S3 and try again.
-      partitioned.write.partitionBy("sample_id").mode("error").parquet(s3path)
+        // Then write to S3 using the given fields as path name partitions. If any
+        // data already exists for the target day, cowardly refuse to run. In
+        // that case, go delete the data from S3 and try again.
+        partitioned.write.partitionBy("sample_id").mode("error").parquet(s3path)
 
-      // Then remove the _SUCCESS file so we don't break Spark partition discovery.
-      S3Store.deleteKey(conf.outputBucket(), s"$s3prefix/_SUCCESS")
+        // Then remove the _SUCCESS file so we don't break Spark partition discovery.
+        S3Store.deleteKey(conf.outputBucket(), s"$s3prefix/_SUCCESS")
+        println(s"Wrote data to s3 path $s3path")
+      } else {
+        // Write the data to a local file.
+        records.write.parquet(conf.outputFilename())
+        println(s"Wrote data to local file ${conf.outputFilename()}")
+      }
 
       println(s"JOB $jobName COMPLETED SUCCESSFULLY FOR $currentDateString")
       println("     RECORDS SEEN:    %d".format(ignoredCount.value + processedCount.value))
