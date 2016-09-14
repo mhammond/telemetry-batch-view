@@ -112,13 +112,7 @@ object SyncView {
         val s3prefix = s"$jobName/$streamVersion/submission_date_s3=$currentDateString"
         val s3path = s"s3://${conf.outputBucket()}/$s3prefix"
 
-        // Repartition the dataframe by sample_id before saving.
-        val partitioned = records.repartition(100, records.col("sample_id"))
-
-        // Then write to S3 using the given fields as path name partitions. If any
-        // data already exists for the target day, cowardly refuse to run. In
-        // that case, go delete the data from S3 and try again.
-        partitioned.write.partitionBy("sample_id").mode("error").parquet(s3path)
+        records.write.mode("error").parquet(s3path)
 
         // Then remove the _SUCCESS file so we don't break Spark partition discovery.
         S3Store.deleteKey(conf.outputBucket(), s"$s3prefix/_SUCCESS")
