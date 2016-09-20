@@ -306,34 +306,4 @@ class SyncViewTest extends FlatSpec with Matchers{
       sc.stop()
     }
   }
-
-  "SyncPing records" can "be read from heka files" in {
-    val sparkConf = new SparkConf().setAppName("SyncPing")
-    sparkConf.setMaster(sparkConf.get("spark.master", "local[1]"))
-    val sc = new SparkContext(sparkConf)
-    sc.setLogLevel("WARN")
-    try {
-      // Use an example framed-heka message. This is a copy of early Sync pings grabbed from
-      // telemetry-2/20160831/telemetry/4/sync/Firefox/nightly/51.0a1/20160830030201/
-      val hekaFileName = "/sync-ping.heka"
-      val hekaURL = getClass.getResource(hekaFileName)
-      val input = hekaURL.openStream()
-      val rows = HekaFrame.parse(input).flatMap(SyncView.messageToRow)
-
-      // Serialize this data as Parquet
-      val sqlContext = new SQLContext(sc)
-      val dataframe = sqlContext.createDataFrame(sc.parallelize(rows.toSeq), SyncPingConverter.syncType)
-      val tempFile = com.mozilla.telemetry.utils.temporaryFileName()
-      dataframe.write.parquet(tempFile.toString)
-
-      // Then read it back
-      val data = sqlContext.read.parquet(tempFile.toString)
-
-      // Apparently there are 190 syncs pings here - not sure how to verify that count, nor how to verify any of the
-      // contents...
-      data.count() should be (190)
-    } finally {
-      sc.stop()
-    }
-  }
 }
