@@ -10,10 +10,6 @@ import org.scalatest.{FlatSpec, Matchers}
 import scala.collection.mutable
 
 class SyncViewTest extends FlatSpec with Matchers{
-  // TODO REMOVE ME - TEST ONLY CODE -
-  if (System.getProperty("os.name").toLowerCase().startsWith("windows"))
-    System.setProperty("hadoop.home.dir", "O:\\src\\moz\\hadoop-common-2.2.0-bin-master")
-  // TODO END REMOVE ME
 
   "Old Style SyncPing payload" can "be serialized" in {
 
