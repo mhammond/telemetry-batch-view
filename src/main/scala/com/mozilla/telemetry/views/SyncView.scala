@@ -236,13 +236,12 @@ object SyncPingConverter {
     StructField("outgoing", ArrayType(outgoingType, containsNull = false), nullable = true)
   ))
 
-  // Parse an element of "engines" elt in a ping. Apparently we just return a Row that must match engineType?
-  private def engineToRow(engine: JValue): Row = {
-    Row(
+  // Parse an element of "engines" elt in a sync object
+  private def engineToRow(engine: JValue): Option[Row] = {
+    Some(Row(
       engine \ "name" match {
         case JString(x) => x
-        // XXX - validation - should maybe be Option[Row] -> None?
-        case _ => null
+        case _ => return None // engines must have a name!
       },
       engine \ "took" match {
         case JInt(x) => x.toLong
@@ -255,7 +254,7 @@ object SyncPingConverter {
       failureReasonToRow(engine \ "failureReason"),
       incomingToRow(engine \ "incoming"),
       outgoingToRow(engine \ "outgoing")
-    )
+    ))
   }
 
   private def toEnginesRows(engines: JValue): Option[List[Row]] = engines match {
@@ -263,7 +262,10 @@ object SyncPingConverter {
       val buf = scala.collection.mutable.ListBuffer.empty[Row]
       // Need simple array iteration??
       for (e <- x) {
-        buf.append(engineToRow(e))
+        engineToRow(e) match {
+          case Some(e) => buf.append(e)
+          case None => null
+        }
       }
       if (buf.isEmpty) None
       else Some(buf.toList)
